@@ -1,0 +1,114 @@
+name: Build kernel (KernelSU-Next)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ksu:
+        description: "Variante: next = KernelSU-Next, none = stock sin root"
+        type: choice
+        options: [next, none]
+        default: next
+      ksu_ref:
+        description: "Tag o commit de KernelSU-Next"
+        default: "v3.4.2"
+      localversion_suffix:
+        description: "Sufijo opcional para uname -r (ej. -ksun)"
+        default: ""
+      stock_boot_url:
+        description: "URL directa a tu boot.img o boot.img.lz4 STOCK (opcional, genera boot.img/boot.tar para Odin)"
+        default: ""
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - ".github/workflows/build-kernel.yml"
+
+env:
+  CLANG_VERSION: r510928
+  CLANG_REF: android-15.0.0_r1
+  MAGISK_VERSION: v31.1
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Liberar espacio en disco
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Dependencias
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev lz4 cpio dwarves \
+            python3 git curl zip unzip binutils-aarch64-linux-gnu
+
+      - name: Caché de Clang AOSP
+        id: clang-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/clang
+          key: clang-${{ env.CLANG_VERSION }}-${{ env.CLANG_REF }}
+
+      - name: Descargar Clang AOSP ${{ env.CLANG_VERSION }}
+        if: steps.clang-cache.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/clang
+          curl -fL --retry 5 --retry-delay 10 -o clang.tgz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/tags/${CLANG_REF}/clang-${CLANG_VERSION}.tar.gz"
+          tar xzf clang.tgz -C ~/clang
+          rm clang.tgz
+
+      - name: Compilar
+        env:
+          KSU: ${{ inputs.ksu || 'next' }}
+          KSU_REF: ${{ inputs.ksu_ref || 'v3.4.2' }}
+          LOCALVERSION_SUFFIX: ${{ inputs.localversion_suffix }}
+        run: |
+          export CLANG_DIR="$HOME/clang"
+          ./scripts/build_ksu.sh
+
+      - name: Empaquetar AnyKernel3
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
+          rm -rf ak3/.git ak3/.github ak3/modules ak3/patch ak3/ramdisk ak3/README.md
+          cp scripts/anykernel/anykernel.sh ak3/anykernel.sh
+          cp out/dist/Image ak3/Image
+          REL=$(cat out/dist/kernel.release)
+          echo "KREL=$REL" >> "$GITHUB_ENV"
+          (cd ak3 && zip -r9 "../out/dist/AK3-a14xm-${REL}.zip" . -x '*.placeholder')
+
+      - name: boot.img + boot.tar (Odin) desde tu boot stock
+        if: ${{ inputs.stock_boot_url }}
+        env:
+          STOCK_BOOT_URL: ${{ inputs.stock_boot_url }}
+        run: |
+          curl -fL --retry 3 -o magisk.apk \
+            "https://github.com/topjohnwu/Magisk/releases/download/${MAGISK_VERSION}/Magisk-${MAGISK_VERSION}.apk"
+          mkdir -p ~/bin
+          unzip -p magisk.apk lib/x86_64/libmagiskboot.so > ~/bin/magiskboot
+          chmod +x ~/bin/magiskboot
+          export PATH="$HOME/bin:$PATH"
+          case "$STOCK_BOOT_URL" in *.lz4) f=stock_boot.img.lz4 ;; *) f=stock_boot.img ;; esac
+          curl -fL --retry 3 -o "$f" "$STOCK_BOOT_URL"
+          ./scripts/repack_boot.sh "$f" out/dist/Image out/dist
+
+      - name: Subir artefactos
+        uses: actions/upload-artifact@v4
+        with:
+          name: a14xm-${{ env.KREL }}
+          path: |
+            out/dist/Image
+            out/dist/Image.gz
+            out/dist/Image.lz4
+            out/dist/AK3-*.zip
+            out/dist/boot.img
+            out/dist/boot.tar
+            out/dist/kernel.config
+            out/dist/kernel.release
+          if-no-files-found: warn
