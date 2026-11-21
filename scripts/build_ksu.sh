@@ -63,17 +63,13 @@ setup_ksu() {
     git -C "$ksu_src" checkout --quiet "$KSU_REF"
     log "KernelSU-Next en $(git -C "$ksu_src" describe --tags --always)"
 
+    # drivers/Kconfig (osource) y drivers/Makefile ya incluyen kernelsu de forma
+    # opcional: basta con crear el enlace.
     ln -sfn ../KernelSU-Next/kernel "$KERNEL_DIR/drivers/kernelsu"
-    grep -q 'kernelsu/' "$KERNEL_DIR/drivers/Makefile" || \
-        printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$KERNEL_DIR/drivers/Makefile"
-    grep -q 'drivers/kernelsu/Kconfig' "$KERNEL_DIR/drivers/Kconfig" || \
-        sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"
 }
 
 cleanup_ksu() {
     rm -f "$KERNEL_DIR/drivers/kernelsu"
-    sed -i '/obj-\$(CONFIG_KSU) += kernelsu\//d' "$KERNEL_DIR/drivers/Makefile"
-    sed -i '/source "drivers\/kernelsu\/Kconfig"/d' "$KERNEL_DIR/drivers/Kconfig"
 }
 
 case "$KSU" in

@@ -243,4 +243,7 @@ source "drivers/hte/Kconfig"
 
 source "drivers/cdx/Kconfig"
 
+# KernelSU-Next (opcional: scripts/build_ksu.sh crea drivers/kernelsu)
+osource "drivers/kernelsu/Kconfig"
+
 endmenu
