@@ -186,9 +186,14 @@ if [ "$KSU_MODE" = lkm ]; then
     log "Compilando kernelsu.ko ($KSU_DIRNAME, LKM) contra este kernel"
     # Para un módulo externo, modpost necesita los CRC de vmlinux.
     cp "$BUILD_OBJ/vmlinux.symvers" "$BUILD_OBJ/Module.symvers"
+    make "${MAKE_ARGS[@]}" modules_prepare >/dev/null
 
     KO_SRC="$KSU_SRC/kernel"
-    KSU_ARGS=(CONFIG_KSU=m)
+    # El LKM usa símbolos internos no exportados (path_umount, init_mm...): en el
+    # teléfono ksuinit los resuelve con kallsyms antes de cargarlo. modpost sólo
+    # debe avisar (el CI oficial de SukiSU parchea modpost para lo mismo);
+    # check_symbol comprueba después que todos existen en este vmlinux.
+    KSU_ARGS=(CONFIG_KSU=m KBUILD_MODPOST_WARN=1)
     [ "$KSU" = sukisu ] && KSU_ARGS+=(CONFIG_KPM=y)   # igual que los LKM oficiales de SukiSU
 
     make "${MAKE_ARGS[@]}" M="$KO_SRC" "${KSU_ARGS[@]}" clean >/dev/null 2>&1 || true
@@ -197,6 +202,10 @@ if [ "$KSU_MODE" = lkm ]; then
     KO="$DIST/${KMI}_kernelsu.ko"
     cp "$KO_SRC/kernelsu.ko" "$KO"
     llvm-strip -d "$KO"
+    # ksuinit carga el LKM sin CRC de MODVERSIONS (el CI oficial parchea modpost
+    # para no emitirlos); se vacía __versions para cumplir ese formato.
+    : > "$BUILD_OBJ/empty"
+    llvm-objcopy --update-section __versions="$BUILD_OBJ/empty" "$KO"
 
     # Sólo debe usar símbolos que exporta este vmlinux.
     if [ -f "$KO_SRC/tools/check_symbol.c" ]; then
@@ -209,7 +218,7 @@ if [ "$KSU_MODE" = lkm ]; then
     "$BUILD_OBJ/scripts/sign-file" "$HASH" "$DM_DIR/certs/mtk_signing_key.pem" \
         "$BUILD_OBJ/certs/signing_key.x509" "$KO"
 
-    VERMAGIC=$(modinfo -F vermagic "$KO" 2>/dev/null || strings "$KO" | grep -m1 '^vermagic=')
+    VERMAGIC=$(grep -a -o -m1 'vermagic=[[:print:]]*' "$KO" || true)
     log "kernelsu.ko listo — vermagic: $VERMAGIC"
 fi
 

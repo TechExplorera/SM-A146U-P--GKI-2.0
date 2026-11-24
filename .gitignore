@@ -2,3 +2,5 @@ out/
 kernel-6.6/KernelSU-Next/
 kernel-6.6/SukiSU-Ultra/
 kernel-6.6/drivers/kernelsu
+kernel-6.6/security/samsung/defex_lsm/defex_packed_rules.bin
+kernel-6.6/security/samsung/defex_lsm/pack_rules

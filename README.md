@@ -19,7 +19,7 @@ Código fuente stock de Samsung para el **Galaxy A14 5G (SM-A146U, `a14xm`, Medi
 | `sukisu` o `next` + `builtin` | `Image` con KSU dentro y DEFEX apagado, zip AK3, `boot.tar` | Un `boot.img` con el kernel nuevo | Recompilado |
 | `none` | `Image` stock recompilado | Nada (sirve como referencia) | Stock |
 
-**Por qué un `.ko` propio en vez del genérico de SukiSU.** El LKM genérico se compila contra el GKI de Google. Este se compila contra el kernel modificado por Samsung, con su misma configuración, así que los CRC de los símbolos (MODVERSIONS) coinciden con los del kernel de tu teléfono. Además va firmado con la clave MTK que ese kernel ya trae en su keyring. El script comprueba con `check_symbol` que el módulo solo use símbolos que existen en este `vmlinux`.
+**Por qué un `.ko` propio en vez del genérico de SukiSU.** El LKM genérico se compila contra el GKI de Google. Este se compila contra el kernel modificado por Samsung, con su misma configuración, así que las estructuras internas que toca KernelSU (`task_struct`, `cred`, SELinux…) tienen exactamente el diseño del kernel de tu teléfono. El script comprueba con `check_symbol` que cada símbolo que usa exista en este `vmlinux`, deja `__versions` vacía como exige el cargador `ksuinit` y lo firma con la clave MTK que el kernel ya trae en su keyring.
 
 ## Compilar en GitHub Actions (recomendado)
 
