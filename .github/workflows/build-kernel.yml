@@ -1,21 +1,26 @@
-name: Build kernel (KernelSU-Next)
+name: Build kernel / KernelSU
 
 on:
   workflow_dispatch:
     inputs:
       ksu:
-        description: "Variante: next = KernelSU-Next, none = stock sin root"
+        description: "Root: sukisu = SukiSU-Ultra, next = KernelSU-Next, none = stock"
         type: choice
-        options: [next, none]
-        default: next
+        options: [sukisu, next, none]
+        default: sukisu
+      ksu_mode:
+        description: "lkm = kernelsu.ko para parchear tu boot stock; builtin = KSU dentro del kernel"
+        type: choice
+        options: [lkm, builtin]
+        default: lkm
       ksu_ref:
-        description: "Tag o commit de KernelSU-Next"
-        default: "v3.4.2"
+        description: "Tag o commit del repo de KSU (vacío = sukisu v3.0.0 / next v3.4.2)"
+        default: ""
       localversion_suffix:
-        description: "Sufijo opcional para uname -r (ej. -ksun)"
+        description: "Sufijo opcional para uname -r (sólo builtin)"
         default: ""
       stock_boot_url:
-        description: "URL directa a tu boot.img o boot.img.lz4 STOCK (opcional, genera boot.img/boot.tar para Odin)"
+        description: "Sólo builtin: URL directa a tu boot.img(.lz4) STOCK para generar boot.img/boot.tar"
         default: ""
   push:
     branches: [main]
@@ -27,6 +32,8 @@ env:
   CLANG_VERSION: r510928
   CLANG_REF: android-15.0.0_r1
   MAGISK_VERSION: v31.1
+  KSU: ${{ inputs.ksu || 'sukisu' }}
+  KSU_MODE: ${{ inputs.ksu_mode || 'lkm' }}
 
 jobs:
   build:
@@ -46,7 +53,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq bc bison flex libssl-dev libelf-dev lz4 cpio dwarves \
-            python3 git curl zip unzip binutils-aarch64-linux-gnu
+            python3 git curl zip unzip kmod binutils-aarch64-linux-gnu
 
       - name: Caché de Clang AOSP
         id: clang-cache
@@ -66,25 +73,26 @@ jobs:
 
       - name: Compilar
         env:
-          KSU: ${{ inputs.ksu || 'next' }}
-          KSU_REF: ${{ inputs.ksu_ref || 'v3.4.2' }}
+          KSU_REF: ${{ inputs.ksu_ref }}
           LOCALVERSION_SUFFIX: ${{ inputs.localversion_suffix }}
         run: |
+          [ -n "$KSU_REF" ] || unset KSU_REF
+          [ "$KSU" = none ] && unset KSU_MODE
           export CLANG_DIR="$HOME/clang"
           ./scripts/build_ksu.sh
+          echo "KREL=$(cat out/dist/kernel.release)" >> "$GITHUB_ENV"
 
       - name: Empaquetar AnyKernel3
+        if: env.KSU_MODE != 'lkm'
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git ak3
           rm -rf ak3/.git ak3/.github ak3/modules ak3/patch ak3/ramdisk ak3/README.md
           cp scripts/anykernel/anykernel.sh ak3/anykernel.sh
           cp out/dist/Image ak3/Image
-          REL=$(cat out/dist/kernel.release)
-          echo "KREL=$REL" >> "$GITHUB_ENV"
-          (cd ak3 && zip -r9 "../out/dist/AK3-a14xm-${REL}.zip" . -x '*.placeholder')
+          (cd ak3 && zip -r9 "../out/dist/AK3-a14xm-${KREL}.zip" . -x '*.placeholder')
 
       - name: boot.img + boot.tar (Odin) desde tu boot stock
-        if: ${{ inputs.stock_boot_url }}
+        if: ${{ inputs.stock_boot_url && env.KSU_MODE != 'lkm' }}
         env:
           STOCK_BOOT_URL: ${{ inputs.stock_boot_url }}
         run: |
@@ -101,8 +109,9 @@ jobs:
       - name: Subir artefactos
         uses: actions/upload-artifact@v4
         with:
-          name: a14xm-${{ env.KREL }}
+          name: a14xm-${{ env.KSU }}-${{ env.KSU_MODE }}-${{ env.KREL }}
           path: |
+            out/dist/android15-6.6_kernelsu.ko
             out/dist/Image
             out/dist/Image.gz
             out/dist/Image.lz4

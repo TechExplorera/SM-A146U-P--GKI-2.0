@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# Compila el kernel GKI (Image) del Galaxy A14 5G (SM-A146U / a14xm, MT6833)
-# a partir del código stock de Samsung, con KernelSU-Next integrado.
+# Compila el kernel GKI del Galaxy A14 5G (SM-A146U / a14xm, MT6833) desde el
+# código stock de Samsung y genera KernelSU (SukiSU-Ultra o KernelSU-Next):
 #
-# Reproduce la config que genera el build oficial (Kleaf/mgk, modo "user"):
+#   * Modo lkm     -> kernelsu.ko compilado contra ESTE árbol (mismo KMI/CRC que
+#                     el kernel del teléfono). El kernel no se toca: el gestor
+#                     parchea tu boot/init_boot stock con este .ko.
+#   * Modo builtin -> KernelSU dentro del Image (+ DEFEX desactivado).
+#
+# Config igual que el build oficial (Kleaf/mgk, modo "user"):
 #   gki_defconfig + mediatek-bazel_defconfig + mt6833_overlay + S96901AA1 + S96901AA1_debug
-# y le aplica scripts/configs/ksu.config (KSU=y, DEFEX off).
 #
 # Uso:
-#   scripts/build_ksu.sh                      # KernelSU-Next (tag por defecto)
-#   KSU=none scripts/build_ksu.sh             # kernel stock sin root
-#   KSU_REF=v3.4.2 CLANG_DIR=/ruta/clang-r510928 JOBS=8 scripts/build_ksu.sh
+#   scripts/build_ksu.sh                          # SukiSU-Ultra, modo LKM (por defecto)
+#   KSU=sukisu KSU_MODE=builtin scripts/build_ksu.sh
+#   KSU=next scripts/build_ksu.sh                 # KernelSU-Next integrado
+#   KSU=none scripts/build_ksu.sh                 # kernel stock sin root
 #
 # Variables:
-#   KSU        next | none                (por defecto: next)
-#   KSU_REF    tag/commit de KernelSU-Next (por defecto: v3.4.2)
+#   KSU        sukisu | next | none           (por defecto: sukisu)
+#   KSU_MODE   lkm | builtin                  (por defecto: lkm para sukisu, builtin para next)
+#   KSU_REF    tag/commit del repo de KSU     (sukisu: v3.0.0, next: v3.4.2)
+#   KSU_REPO   URL del repo (opcional, para forks)
 #   CLANG_DIR  raíz de un Clang/LLVM (con bin/clang). Vacío = Clang del sistema.
-#   JOBS       hilos de make               (por defecto: nproc)
-#   OUT_DIR    carpeta de salida           (por defecto: <repo>/out)
+#   JOBS       hilos de make                  (por defecto: nproc)
+#   OUT_DIR    carpeta de salida              (por defecto: <repo>/out)
 #   LOCALVERSION_SUFFIX  sufijo extra para uname -r (por defecto: vacío)
 #   EXTRA_CONFIG  fragmento .config adicional opcional
 #   CONFIG_ONLY=1 sólo genera y valida la .config, sin compilar
@@ -26,10 +33,27 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 KERNEL_DIR="$ROOT/kernel-6.6"
 DM_DIR="$ROOT/kernel/kernel_device_modules-6.6"
+KMI="android15-6.6"
 
-KSU="${KSU:-next}"
-KSU_REF="${KSU_REF:-v3.4.2}"
-KSU_REPO="${KSU_REPO:-https://github.com/KernelSU-Next/KernelSU-Next.git}"
+KSU="${KSU:-sukisu}"
+case "$KSU" in
+    sukisu)
+        KSU_MODE="${KSU_MODE:-lkm}"
+        KSU_REF="${KSU_REF:-v3.0.0}"
+        KSU_REPO="${KSU_REPO:-https://github.com/SukiSU-Ultra/SukiSU-Ultra.git}"
+        KSU_DIRNAME="SukiSU-Ultra"
+        ;;
+    next)
+        KSU_MODE="${KSU_MODE:-builtin}"
+        KSU_REF="${KSU_REF:-v3.4.2}"
+        KSU_REPO="${KSU_REPO:-https://github.com/KernelSU-Next/KernelSU-Next.git}"
+        KSU_DIRNAME="KernelSU-Next"
+        ;;
+    none) KSU_MODE="none" ;;
+    *) echo "KSU debe ser sukisu, next o none" >&2; exit 1 ;;
+esac
+case "$KSU_MODE" in lkm|builtin|none) ;; *) echo "KSU_MODE debe ser lkm o builtin" >&2; exit 1 ;; esac
+
 CLANG_DIR="${CLANG_DIR:-}"
 JOBS="${JOBS:-$(nproc)}"
 OUT_DIR="${OUT_DIR:-$ROOT/out}"
@@ -50,22 +74,35 @@ fi
 command -v clang >/dev/null || die "clang no encontrado (instala clang/lld/llvm o define CLANG_DIR)"
 command -v ld.lld >/dev/null || die "ld.lld no encontrado"
 log "Toolchain: $(clang --version | head -1)"
+log "Variante: KSU=$KSU modo=$KSU_MODE ${KSU_REF:+ref=$KSU_REF}"
 
-# ------------------------------------------------------------- KernelSU-Next
-setup_ksu() {
-    local ksu_src="$KERNEL_DIR/KernelSU-Next"
-    if [ ! -d "$ksu_src/.git" ]; then
-        log "Clonando KernelSU-Next ($KSU_REF)"
-        # Historial completo: el Makefile de KSU calcula la versión con rev-list --count.
-        git clone --quiet "$KSU_REPO" "$ksu_src"
+# ------------------------------------------------------------ fuente de KSU
+KSU_SRC=""
+fetch_ksu() {
+    KSU_SRC="$KERNEL_DIR/$KSU_DIRNAME"
+    if [ ! -d "$KSU_SRC/.git" ]; then
+        log "Clonando $KSU_DIRNAME"
+        # Historial completo: el Kbuild de KSU calcula la versión con rev-list --count.
+        git clone --quiet "$KSU_REPO" "$KSU_SRC"
     fi
-    git -C "$ksu_src" fetch --quiet --tags origin
-    git -C "$ksu_src" checkout --quiet "$KSU_REF"
-    log "KernelSU-Next en $(git -C "$ksu_src" describe --tags --always)"
+    git -C "$KSU_SRC" fetch --quiet --tags origin
+    git -C "$KSU_SRC" checkout --quiet "$KSU_REF"
+    log "$KSU_DIRNAME en $(git -C "$KSU_SRC" describe --tags --always)"
+}
 
-    ln -sfn ../KernelSU-Next/kernel "$KERNEL_DIR/drivers/kernelsu"
-    # Engancha kernelsu en drivers/ sólo durante la compilación; restore_hooks
-    # los retira al salir para dejar el árbol stock intacto.
+# Ganchos en drivers/ sólo durante un build builtin; se retiran al salir para
+# dejar el árbol stock intacto.
+restore_hooks() {
+    sed -i '/^obj-\$(CONFIG_KSU) += kernelsu\/$/d' "$KERNEL_DIR/drivers/Makefile"
+    sed -i '/^source "drivers\/kernelsu\/Kconfig"$/d' "$KERNEL_DIR/drivers/Kconfig"
+}
+remove_builtin() {
+    rm -f "$KERNEL_DIR/drivers/kernelsu"
+    restore_hooks
+}
+setup_builtin() {
+    # El enlace es relativo a drivers/: apunta a ../<repo>/kernel
+    ln -sfn "../$KSU_DIRNAME/kernel" "$KERNEL_DIR/drivers/kernelsu"
     trap restore_hooks EXIT
     grep -q 'kernelsu/' "$KERNEL_DIR/drivers/Makefile" || \
         printf 'obj-$(CONFIG_KSU) += kernelsu/\n' >> "$KERNEL_DIR/drivers/Makefile"
@@ -73,20 +110,10 @@ setup_ksu() {
         sed -i '/^endmenu/i source "drivers/kernelsu/Kconfig"' "$KERNEL_DIR/drivers/Kconfig"
 }
 
-restore_hooks() {
-    sed -i '/^obj-\$(CONFIG_KSU) += kernelsu\/$/d' "$KERNEL_DIR/drivers/Makefile"
-    sed -i '/^source "drivers\/kernelsu\/Kconfig"$/d' "$KERNEL_DIR/drivers/Kconfig"
-}
-
-cleanup_ksu() {
-    rm -f "$KERNEL_DIR/drivers/kernelsu"
-    restore_hooks
-}
-
-case "$KSU" in
-    next) setup_ksu ;;
-    none) cleanup_ksu; log "Compilando kernel stock (sin KernelSU)" ;;
-    *) die "KSU debe ser 'next' o 'none'" ;;
+case "$KSU_MODE" in
+    builtin) fetch_ksu; setup_builtin ;;
+    lkm)     fetch_ksu; remove_builtin ;;   # el kernel queda stock
+    none)    remove_builtin ;;
 esac
 
 # ------------------------------------------------------------------ config
@@ -113,11 +140,11 @@ FRAGMENTS=(
     "$DM_DIR/kernel/configs/S96901AA1.config"
     "$DM_DIR/kernel/configs/S96901AA1_debug.config"
 )
-[ "$KSU" = next ] && FRAGMENTS+=("$ROOT/scripts/configs/ksu.config")
+[ "$KSU_MODE" = builtin ] && FRAGMENTS+=("$ROOT/scripts/configs/ksu.config")
 [ -n "$EXTRA_CONFIG" ] && FRAGMENTS+=("$EXTRA_CONFIG")
 
 log "Generando .config"
-# -m: solo combinar; los símbolos de módulos externos (Kconfig.ext) se descartan,
+# -m: sólo combinar; los símbolos de módulos externos (Kconfig.ext) se descartan,
 # como en el Image GKI oficial, que no los compila dentro del kernel.
 KCONFIG_CONFIG="$BUILD_OBJ/.config" \
     "$KERNEL_DIR/scripts/kconfig/merge_config.sh" -m -O "$BUILD_OBJ" "${FRAGMENTS[@]}" >/dev/null
@@ -129,11 +156,11 @@ check_cfg() { # símbolo valor_esperado
     [ "$got" = "$2" ] || die "CONFIG_$1=$got (se esperaba $2)"
 }
 check_cfg MODVERSIONS y
-if [ "$KSU" = next ]; then
-    check_cfg KSU y
-    check_cfg KPROBES y
-    check_cfg SECURITY_DEFEX n
-fi
+check_cfg KPROBES y
+case "$KSU_MODE" in
+    builtin) check_cfg KSU y; check_cfg SECURITY_DEFEX n ;;
+    *)       check_cfg KSU undef ;;
+esac
 
 if [ "${CONFIG_ONLY:-0}" = 1 ]; then
     cp "$BUILD_OBJ/.config" "$DIST/kernel.config"
@@ -141,7 +168,7 @@ if [ "${CONFIG_ONLY:-0}" = 1 ]; then
     exit 0
 fi
 
-# ------------------------------------------------------------------- build
+# ------------------------------------------------------------------- kernel
 log "Compilando Image con $JOBS hilos"
 make "${MAKE_ARGS[@]}" Image Image.gz
 
@@ -151,8 +178,40 @@ cp "$BUILD_OBJ/System.map" "$DIST/"
 if command -v lz4 >/dev/null; then
     lz4 -f -l -12 --favor-decSpeed "$DIST/Image" "$DIST/Image.lz4" >/dev/null
 fi
-
 RELEASE=$(cat "$BUILD_OBJ/include/config/kernel.release")
 echo "$RELEASE" > "$DIST/kernel.release"
+
+# ---------------------------------------------------------------------- LKM
+if [ "$KSU_MODE" = lkm ]; then
+    log "Compilando kernelsu.ko ($KSU_DIRNAME, LKM) contra este kernel"
+    # Para un módulo externo, modpost necesita los CRC de vmlinux.
+    cp "$BUILD_OBJ/vmlinux.symvers" "$BUILD_OBJ/Module.symvers"
+
+    KO_SRC="$KSU_SRC/kernel"
+    KSU_ARGS=(CONFIG_KSU=m)
+    [ "$KSU" = sukisu ] && KSU_ARGS+=(CONFIG_KPM=y)   # igual que los LKM oficiales de SukiSU
+
+    make "${MAKE_ARGS[@]}" M="$KO_SRC" "${KSU_ARGS[@]}" clean >/dev/null 2>&1 || true
+    make "${MAKE_ARGS[@]}" M="$KO_SRC" "${KSU_ARGS[@]}" modules
+
+    KO="$DIST/${KMI}_kernelsu.ko"
+    cp "$KO_SRC/kernelsu.ko" "$KO"
+    llvm-strip -d "$KO"
+
+    # Sólo debe usar símbolos que exporta este vmlinux.
+    if [ -f "$KO_SRC/tools/check_symbol.c" ]; then
+        cc -O2 -o "$BUILD_OBJ/check_symbol" "$KO_SRC/tools/check_symbol.c"
+        "$BUILD_OBJ/check_symbol" "$KO" "$BUILD_OBJ/vmlinux"
+    fi
+
+    # Firma con la misma clave MTK que el kernel lleva en su keyring.
+    HASH=$("$KERNEL_DIR/scripts/config" --file "$BUILD_OBJ/.config" --state MODULE_SIG_HASH)
+    "$BUILD_OBJ/scripts/sign-file" "$HASH" "$DM_DIR/certs/mtk_signing_key.pem" \
+        "$BUILD_OBJ/certs/signing_key.x509" "$KO"
+
+    VERMAGIC=$(modinfo -F vermagic "$KO" 2>/dev/null || strings "$KO" | grep -m1 '^vermagic=')
+    log "kernelsu.ko listo — vermagic: $VERMAGIC"
+fi
+
 log "Listo: $RELEASE"
 ls -la "$DIST"
