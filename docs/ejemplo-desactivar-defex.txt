@@ -1,0 +1,82 @@
+===========================================================================
+EJEMPLO: desactivar DEFEX con un overlay de configuracion (a14xm / MT6833)
+===========================================================================
+
+Un "fragmento" (overlay) es un archivo de texto con lineas:
+    CONFIG_X=y             -> activar
+    CONFIG_X=m             -> como modulo
+    # CONFIG_X is not set   -> desactivar
+Se apila sobre el defconfig con scripts/kconfig/merge_config.sh.
+REGLA CLAVE: el ULTIMO fragmento de la lista gana.
+
+El unico cambio para root LKM con cualquier gestor es apagar DEFEX
+(no hay RKP/KDP/UH/FIVE/PROCA en este codigo fuente).
+
+
+---------------------------------------------------------------------------
+Fragmento de ejemplo (esto es lo que contiene el overlay)
+---------------------------------------------------------------------------
+# a14xm_root.config
+# CONFIG_SECURITY_DEFEX is not set
+# CONFIG_SECURITY_DEFEX_USER is not set
+
+
+---------------------------------------------------------------------------
+FORMA A - estilo Samsung (lo toma el build de Bazel)
+---------------------------------------------------------------------------
+1) Guarda el fragmento de arriba en:
+     kernel/kernel_device_modules-6.6/kernel/configs/a14xm_root.config
+
+2) En build_kernel.sh, anade "a14xm_root.config" al FINAL de los overlays,
+   en las DOS lineas donde aparecen:
+
+   --kernel-defconfig-overlays "mt6833_overlay.config S96901AA1.config S96901AA1_debug.config a14xm_root.config"
+
+   export DEFCONFIG_OVERLAYS="mt6833_overlay.config S96901AA1.config S96901AA1_debug.config a14xm_root.config"
+
+3) Compila. merge_config.sh apila el overlay y DEFEX queda apagado.
+   (El motor esta en kernel/build/bazel_mgk_rules/mgk.bzl: arma la lista de
+    overlays y la pasa a merge_config.sh -m -r.)
+
+   NOTA: el archivo debe terminar en .config y estar en esa carpeta
+   kernel/configs/ ; mgk.bzl los busca ahi.
+
+
+---------------------------------------------------------------------------
+FORMA B - a mano con merge_config.sh (sin Bazel)
+---------------------------------------------------------------------------
+cd kernel-6.6
+printf '# CONFIG_SECURITY_DEFEX is not set\n' > /tmp/root.config
+
+scripts/kconfig/merge_config.sh -m \
+  arch/arm64/configs/gki_defconfig \
+  ../kernel/kernel_device_modules-6.6/arch/arm64/configs/mediatek-bazel_defconfig \
+  ../kernel/kernel_device_modules-6.6/kernel/configs/mt6833_overlay.config \
+  ../kernel/kernel_device_modules-6.6/kernel/configs/S96901AA1.config \
+  ../kernel/kernel_device_modules-6.6/kernel/configs/S96901AA1_debug.config \
+  /tmp/root.config
+
+make olddefconfig
+
+
+---------------------------------------------------------------------------
+FORMA C - cambiar una sola opcion en un .config ya generado
+---------------------------------------------------------------------------
+kernel-6.6/scripts/config --file out/obj/.config -d SECURITY_DEFEX
+make -C kernel-6.6 O=out/obj olddefconfig
+
+# -d desactiva, -e activa, -m como modulo. Luego SIEMPRE olddefconfig
+# para que se resuelvan las dependencias.
+
+
+---------------------------------------------------------------------------
+Comprobar que quedo apagado
+---------------------------------------------------------------------------
+grep SECURITY_DEFEX out/obj/.config
+# debe mostrar:  # CONFIG_SECURITY_DEFEX is not set
+
+===========================================================================
+En este repo, scripts/configs/lkm-host.config hace justo esto (DEFEX off)
+y scripts/build_ksu.sh lo aplica con el mismo merge_config.sh. Este .txt es
+solo un ejemplo didactico; no lo usa la compilacion.
+===========================================================================
