@@ -49,10 +49,11 @@ case "$KSU" in
         KSU_REPO="${KSU_REPO:-https://github.com/KernelSU-Next/KernelSU-Next.git}"
         KSU_DIRNAME="KernelSU-Next"
         ;;
+    host) KSU_MODE="host" ;;   # kernel anfitrión para LKM de cualquier gestor
     none) KSU_MODE="none" ;;
-    *) echo "KSU debe ser sukisu, next o none" >&2; exit 1 ;;
+    *) echo "KSU debe ser sukisu, next, host o none" >&2; exit 1 ;;
 esac
-case "$KSU_MODE" in lkm|builtin|none) ;; *) echo "KSU_MODE debe ser lkm o builtin" >&2; exit 1 ;; esac
+case "$KSU_MODE" in lkm|builtin|host|none) ;; *) echo "KSU_MODE debe ser lkm o builtin" >&2; exit 1 ;; esac
 
 CLANG_DIR="${CLANG_DIR:-}"
 JOBS="${JOBS:-$(nproc)}"
@@ -111,9 +112,10 @@ setup_builtin() {
 }
 
 case "$KSU_MODE" in
-    builtin) fetch_ksu; setup_builtin ;;
-    lkm)     fetch_ksu; remove_builtin ;;   # el kernel queda stock
-    none)    remove_builtin ;;
+    builtin)  fetch_ksu; setup_builtin ;;
+    lkm)      fetch_ksu; remove_builtin ;;   # el kernel queda stock
+    host)     remove_builtin ;;              # sin KSU; DEFEX off + módulos sin firma
+    none)     remove_builtin ;;
 esac
 
 # ------------------------------------------------------------------ config
@@ -141,6 +143,7 @@ FRAGMENTS=(
     "$DM_DIR/kernel/configs/S96901AA1_debug.config"
 )
 [ "$KSU_MODE" = builtin ] && FRAGMENTS+=("$ROOT/scripts/configs/ksu.config")
+[ "$KSU_MODE" = host ] && FRAGMENTS+=("$ROOT/scripts/configs/lkm-host.config")
 [ -n "$EXTRA_CONFIG" ] && FRAGMENTS+=("$EXTRA_CONFIG")
 
 log "Generando .config"
@@ -159,6 +162,7 @@ check_cfg MODVERSIONS y
 check_cfg KPROBES y
 case "$KSU_MODE" in
     builtin) check_cfg KSU y; check_cfg SECURITY_DEFEX n ;;
+    host)    check_cfg KSU undef; check_cfg SECURITY_DEFEX n; check_cfg MODULE_SIG_FORCE n ;;
     *)       check_cfg KSU undef ;;
 esac
 

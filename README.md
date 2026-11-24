@@ -13,19 +13,22 @@ Código fuente stock de Samsung para el **Galaxy A14 5G (SM-A146U, `a14xm`, Medi
 
 ## Modos
 
-| Modo | Qué genera | Qué flasheas | Kernel |
+| `KSU=` | Qué genera | Qué flasheas | Root compatible |
 |---|---|---|---|
-| **`sukisu` + `lkm`** (por defecto) | `android15-6.6_kernelsu.ko` compilado contra este árbol | Tu `boot`/`init_boot` **stock**, parcheado por el gestor SukiSU | Stock, sin cambios |
-| `sukisu` o `next` + `builtin` | `Image` con KSU dentro y DEFEX apagado, zip AK3, `boot.tar` | Un `boot.img` con el kernel nuevo | Recompilado |
-| `none` | `Image` stock recompilado | Nada (sirve como referencia) | Stock |
+| **`host`** (por defecto) | `Image` sin KSU, con DEFEX apagado y carga de módulos sin firma | Un `boot.img`/zip AK3 con este kernel | **LKM de cualquier gestor** (KernelSU, KernelSU-Next, SukiSU…) |
+| `sukisu` + `lkm` | `android15-6.6_kernelsu.ko` contra este árbol | Tu `boot`/`init_boot` **stock**, parcheado por el gestor SukiSU | Solo SukiSU |
+| `sukisu` o `next` + `builtin` | `Image` con KSU dentro y DEFEX apagado, zip AK3, `boot.tar` | Un `boot.img` con el kernel nuevo | Solo ese gestor |
+| `none` | `Image` stock recompilado | Nada (referencia) | Ninguno |
 
-**Por qué un `.ko` propio en vez del genérico de SukiSU.** El LKM genérico se compila contra el GKI de Google. Este se compila contra el kernel modificado por Samsung, con su misma configuración, así que las estructuras internas que toca KernelSU (`task_struct`, `cred`, SELinux…) tienen exactamente el diseño del kernel de tu teléfono. El script comprueba con `check_symbol` que cada símbolo que usa exista en este `vmlinux`, deja `__versions` vacía como exige el cargador `ksuinit` y lo firma con la clave MTK que el kernel ya trae en su keyring.
+**Elige `host` si quieres usar cualquier gestor.** Es un kernel por lo demás stock en el que solo se apaga DEFEX (la única protección anti-root de Samsung en este código; no hay RKP/KDP/UH/FIVE/PROCA) y se permite cargar módulos sin firma. Flasheas este kernel una vez y luego usas el gestor que prefieras en su modo LKM, que parchea tu `init_boot`/`boot` con su propio `.ko`. Como el kernel ya no tiene firma de módulos forzada, acepta el `.ko` de cualquier gestor.
+
+**El modo `sukisu + lkm` deja el kernel intacto** y genera un `.ko` a medida. El LKM genérico se compila contra el GKI de Google; este se compila contra el kernel de Samsung, con su misma config, así que las estructuras internas (`task_struct`, `cred`, SELinux…) coinciden con las del kernel de tu teléfono. El script comprueba con `check_symbol` que cada símbolo exista en este `vmlinux`, deja `__versions` vacía como exige `ksuinit` y lo firma con la clave MTK del keyring. Úsalo si no quieres cambiar de kernel.
 
 ## Compilar en GitHub Actions (recomendado)
 
 1. Entra en **Actions → Build kernel / KernelSU → Run workflow**.
-2. Deja `ksu = sukisu` y `ksu_mode = lkm`. En `ksu_ref` puedes poner otro tag o commit de SukiSU-Ultra; por defecto es `v3.0.0`.
-3. Descarga el artefacto y saca `android15-6.6_kernelsu.ko`.
+2. Para usar cualquier gestor, deja `ksu = host`. Descarga el `Image` o el zip AK3 del artefacto.
+3. Para el `.ko` de SukiSU sin cambiar de kernel, pon `ksu = sukisu`, `ksu_mode = lkm` y saca `android15-6.6_kernelsu.ko`.
 
 ## Compilar en local
 
@@ -45,14 +48,21 @@ El resultado queda en `out/dist/`.
 
 | Variable | Valores |
 |---|---|
-| `KSU` | `sukisu` (por defecto), `next` o `none` |
-| `KSU_MODE` | `lkm` o `builtin` |
+| `KSU` | `host` (por defecto), `sukisu`, `next` o `none` |
+| `KSU_MODE` | `lkm` o `builtin` (ignorado con `host`/`none`) |
 | `KSU_REF` | tag o commit del repo de KSU |
 | Otras | `JOBS=<n>`, `LOCALVERSION_SUFFIX=-x`, `EXTRA_CONFIG=<fragmento>`, `CONFIG_ONLY=1` |
 
-## Instalar SukiSU en modo LKM
+> ⚠️ Cualquiera de estos métodos necesita el **bootloader desbloqueado**. Desbloquearlo dispara Knox (e-fuse permanente), borra los datos y desactiva Samsung Pay, Secure Folder y similares. En variantes de operador de EE. UU. (SM-A146U) **es posible que no se pueda desbloquear**: comprueba que aparezca «Desbloqueo OEM» en Opciones de desarrollador. Guarda tu `boot.img`/`init_boot.img` stock para volver atrás.
 
-> ⚠️ Necesitas el **bootloader desbloqueado**. Desbloquearlo dispara Knox (e-fuse permanente), borra los datos y desactiva Samsung Pay, Secure Folder y similares. En variantes de operador de EE. UU. (SM-A146U) **es posible que no se pueda desbloquear**: comprueba que aparezca «Desbloqueo OEM» en Opciones de desarrollador.
+## Instalar el modo `host` (cualquier gestor) — recomendado
+
+1. Compila con `ksu = host` y descarga el `Image` (o el zip AK3) del artefacto.
+2. Mete el `Image` en tu `boot.img` stock y genera `boot.tar` (el workflow lo hace solo si pasas `stock_boot_url`; en local, `scripts/repack_boot.sh tu_boot.img out/dist/Image out/dist`).
+3. Flashea `boot.tar` con Odin en el slot **AP**. Si falla la verificación AVB, flashea también un `vbmeta` con la verificación desactivada.
+4. Instala el gestor que prefieras (KernelSU-Next, SukiSU-Ultra…) y úsalo en **modo LKM**: la app parchea tu `init_boot`/`boot` con su propio `.ko`, que este kernel acepta porque ya no fuerza la firma de módulos y DEFEX está apagado.
+
+## Instalar SukiSU en modo LKM (sin cambiar de kernel)
 
 1. Descarga el firmware **exacto** que tienes instalado y abre el `AP_*.tar.md5`.
    - Si trae `init_boot.img.lz4`, usa ese archivo.
